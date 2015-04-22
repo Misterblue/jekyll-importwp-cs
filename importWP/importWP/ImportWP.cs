@@ -63,6 +63,9 @@ class ImportWP
     string m_dbName;
     string m_dbUser;
     string m_dbPass;
+
+    string m_tablePrefix = "wp_";
+    bool m_cleanEntities = false;
     
     private string Invocation()
     {
@@ -74,6 +77,8 @@ ImportWP
         -U|--dbUser databaseUser
         -P|--dbPass databaseUserPassword
         -o|--output outputFilename
+        --tablePrefix prefix
+        --cleanEntities
         --verbose
 ";
     }
@@ -112,6 +117,12 @@ ImportWP
                 case "--dbPass":
                     m_dbPass = kvp.Value;
                     break;
+                case "--tablePrefix":
+                    m_tablePrefix = kvp.Value;
+                    break;
+                case "--cleanEntities":
+                    m_cleanEntities = true;
+                    break;
                 case "--verbose":
                     m_verbose++;
                     break;
@@ -140,7 +151,13 @@ ImportWP
 
             // Find the Pages
             using (MySqlCommand cmd = new MySqlCommand(
-                       "SELECT ID, post_title, post_name, post_parent FROM wp_posts WHERE post_type = 'page'", dbcon))
+                       String.Format("SELECT "
+                                        + "ID,"
+                                        + "post_title,"
+                                        + "post_name,"
+                                        + "post_parent"
+                                        + " FROM {0}posts WHERE post_type = 'page'",
+                                                m_tablePrefix), dbcon))
             {
                 try
                 {
@@ -150,7 +167,7 @@ ImportWP
                         {
                             ulong pageID = (ulong)dbReader["ID"];
                             string pageTitle = (string)dbReader["post_title"];
-                            string pageSlug = sluggify((string)dbReader["post_name"]);
+                            string pageSlug = Sluggify((string)dbReader["post_name"]);
                             ulong pageParent = (ulong)dbReader["post_parent"];
                             Dictionary<string, string> pieces = new Dictionary<string,string>();
                             pieces["pageTitle"] = pageTitle;
@@ -158,8 +175,11 @@ ImportWP
                             pieces["pageParent"] = pageParent.ToString();
                             pageNameList[pageID] = pieces;
 
-                            Logger.Log("Pages: ID={0}, title={1}, slug={2}, parent={3}",
-                                                    pageID, pageTitle, pageSlug, pageParent);
+                            if (m_verbose > 0)
+                            {
+                                Logger.Log("Pages: ID={0}, title={1}, slug={2}, parent={3}",
+                                                        pageID, pageTitle, pageSlug, pageParent);
+                            }
                         }
                     }
                 }
@@ -171,24 +191,24 @@ ImportWP
 
 
             using (MySqlCommand cmd = new MySqlCommand(
-                               "SELECT "
-                                 + "wp_posts.ID,"
-                                 + "wp_posts.guid,"
-                                 + "wp_posts.post_type,"
-                                 + "wp_posts.post_status,"
-                                 + "wp_posts.post_title,"
-                                 + "wp_posts.post_name,"
-                                 + "wp_posts.post_date,"
-                                 + "wp_posts.post_date_gmt,"
-                                 + "wp_posts.post_content,"
-                                 + "wp_posts.post_excerpt,"
-                                 + "wp_posts.comment_count,"
-                                 + "wp_users.display_name,"
-                                 + "wp_users.user_login,"
-                                 + "wp_users.user_email,"
-                                 + "wp_users.user_url"
-                                 + " FROM wp_posts LEFT JOIN wp_users ON wp_posts.post_author = wp_users.ID"
-                                 + " WHERE wp_posts.post_status = 'publish'"
+                               String.Format("SELECT "
+                                 + "{0}posts.ID,"
+                                 + "{0}posts.guid,"
+                                 + "{0}posts.post_type,"
+                                 + "{0}posts.post_status,"
+                                 + "{0}posts.post_title,"
+                                 + "{0}posts.post_name,"
+                                 + "{0}posts.post_date,"
+                                 + "{0}posts.post_date_gmt,"
+                                 + "{0}posts.post_content,"
+                                 + "{0}posts.post_excerpt,"
+                                 + "{0}posts.comment_count,"
+                                 + "{0}users.display_name,"
+                                 + "{0}users.user_login,"
+                                 + "{0}users.user_email,"
+                                 + "{0}users.user_url"
+                                 + " FROM {0}posts LEFT JOIN {0}users ON {0}posts.post_author = {0}users.ID"
+                                 + " WHERE {0}posts.post_status = 'publish'", m_tablePrefix)
                                            , dbcon))
             {
                 try
@@ -197,11 +217,106 @@ ImportWP
                     {
                         while (dbReader.Read())
                         {
-                            ulong postID = (ulong)dbReader["ID"];
-                            string postTitle = (string)dbReader["post_title"];
+                            if (m_verbose > 0)
+                            {
+                                ulong postID = (ulong)dbReader["ID"];
+                                string postTitle = (string)dbReader["post_title"];
+                                Logger.Log("Post: ID={0}, title={1}", postID, postTitle);
+                            }
+                            string pTitle = (string)dbReader["post_title"];
+                            if (m_cleanEntities) pTitle = CleanEntities(pTitle);
 
-                            Logger.Log("Post: ID={0}, title={1}", postID, postTitle);
-                            ProcessPost(dbReader);
+                            string pSlug = (string)dbReader["post_name"];
+                            if (String.IsNullOrEmpty(pSlug)) pSlug = Sluggify(pTitle);
+
+                            DateTime pDate = DateTime.Now;
+                            try
+                            {
+                                pDate = (DateTime)dbReader["post_date"];
+                            }
+                            catch
+                            {
+                                pDate = DateTime.Now;
+                            }
+
+                            string pName = String.Format("{0:d2}-{1:d2}-{2:d2}-{3}.md", pDate.Year, pDate.Month, pDate.Day, pSlug);
+
+                            string pContent = (string)dbReader["post_content"];
+                            if (m_cleanEntities) pContent = CleanEntities(pContent);
+
+                            string pExceprt = (string)dbReader["post_excerpt"];
+
+                            int moreIndex = pContent.IndexOf("<!--- more --->");
+                            string moreAnchor = String.Empty;
+                            string pExcerpt = (string)dbReader["post_excerpt"];
+
+                            if (String.IsNullOrEmpty(pExcerpt) && moreIndex > 0)
+                            {
+                                pExceprt = pContent.Substring(0, moreIndex);
+                            }
+                            if (moreIndex > 0)
+                            {
+                                pContent.Replace("<!--- more --->", "<a id=\"more\"></a>");
+                                pContent.Replace("<!--- more --->",
+                                    String.Format("<a id=\"more\"></a><a id=\"more-{0}\"></a>", ((ulong)dbReader["ID"]) ));
+                            }
+
+                            if (m_verbose > 0)
+                                Logger.Log("title='{0}', slug='{1}', date={2}, name='{3}'", pTitle, pSlug, pDate, pName);
+
+
+                            HashSet<string> categories = new HashSet<string>();
+                            HashSet<string> tags = new HashSet<string>();
+
+                            using (MySqlCommand cmd2 = new MySqlCommand(
+                                                        String.Format("SELECT "
+                                                            + "{0}terms.name,"
+                                                            + "{0}term_taxonomy.taxonomy"
+                                                            + " FROM"
+                                                            + "{0}terms,"
+                                                            + "{0}term_relationships,"
+                                                            + "{0}term_taxonomy "
+                                                            + " WHERE"
+                                                            + "{0}term_relationships.object_id = '{1}' AND "
+                                                            + "{0}term_relationships.term_taxonomy_id = {0}term_taxonomy.term_taxonomy_id AND "
+                                                            + "{0}terms.term_id = {0}term_taxonomy.term_id", m_tablePrefix, ((ulong)dbReader["ID"])
+                                                            , dbcon) ))
+                            {
+                                try
+                                {
+                                    using (MySqlDataReader dbReader2 = cmd2.ExecuteReader())
+                                    {
+                                        while (dbReader2.Read())
+                                        {
+                                            if (m_verbose > 0)
+                                            {
+                                                if (((string)dbReader2["term"]) == "category")
+                                                {
+                                                    string cat = (string)dbReader2["name"];
+                                                    if (m_cleanEntities)
+                                                        categories.Add(CleanEntities(cat));
+                                                    else
+                                                        categories.Add(cat);
+                                                    if (m_verbose > 0) Logger.Log("Category = {0}", cat);
+                                                }
+                                                if (((string)dbReader2["term"]) == "post_tag")
+                                                {
+                                                    string tag = (string)dbReader2["name"];
+                                                    if (m_cleanEntities)
+                                                        tags.Add(CleanEntities(tag));
+                                                    else
+                                                        tags.Add(tag);
+                                                    if (m_verbose > 0) Logger.Log("Tag = {0}", tag);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                catch (Exception e)
+                                {
+                                    Logger.Log("Error reading DB: {0}", e);
+                                }
+                            }
                         }
                     }
                 }
@@ -215,15 +330,16 @@ ImportWP
 
     }
 
-    private void ProcessPost(IDataReader thePost)
+    private string CleanEntities(string ent)
     {
+        return ent;
     }
 
     // Turn a title into a URLable slug
     //  def self.sluggify( title )
     //    title = title.to_ascii.downcase.gsub(/[^0-9A-Za-z]+/, " ").strip.gsub(" ", "-")
     //  end
-    private string sluggify(string title)
+    private string Sluggify(string title)
     {
         string ret = title.ToLower();
         ret = ret.Replace("[^0-9A-Za-z]+", " ");
