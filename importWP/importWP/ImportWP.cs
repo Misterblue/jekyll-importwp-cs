@@ -1,4 +1,4 @@
-﻿/* -----------------------------------------------------------------
+/* -----------------------------------------------------------------
  * Copyright (c) 2015 Robert Adams
  * All rights reserved.
  *
@@ -201,6 +201,7 @@ ImportWP
                             string postTitle = (string)dbReader["post_title"];
 
                             Logger.Log("Post: ID={0}, title={1}", postID, postTitle);
+                            ProcessPost(dbReader);
                         }
                     }
                 }
@@ -212,6 +213,10 @@ ImportWP
         }
 
 
+    }
+
+    private void ProcessPost(IDataReader thePost)
+    {
     }
 
     // Turn a title into a URLable slug
