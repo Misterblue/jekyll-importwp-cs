@@ -89,10 +89,70 @@ ImportWP
         prog.Start(args);
         return;
     }
-
+    
     public ImportWP()
     {
     }
+
+    public class PageName
+    {
+        public ulong ID;
+        public string post_title;
+        public string post_name;
+        public ulong post_parent;
+
+        public PageName()
+        {
+            ID = 0;
+            post_title = String.Empty;
+            post_name = String.Empty;
+            post_parent = 0;
+        }
+    }
+
+    public Dictionary<ulong, PageName> m_pageNameList = new Dictionary<ulong, PageName>();
+
+    public class PostInfo
+    {
+        public ulong ID;
+        public string guid;
+        public string post_type;
+        public string post_status;
+        public string post_title;
+        public string post_slug;
+        public string post_name;
+        public DateTime post_date;
+        public DateTime post_date_gmt;
+        public string post_content;
+        public string post_excerpt;
+        public int comment_count;
+        public string display_name;
+        public string user_login;
+        public string user_email;
+        public string user_url;
+
+        public PostInfo()
+        {
+            ID = 0;
+            guid = String.Empty;
+            post_type = String.Empty;
+            post_status = String.Empty;
+            post_title = String.Empty;
+            post_slug = String.Empty;
+            post_name = String.Empty;
+            post_date = DateTime.Now;
+            post_date_gmt = DateTime.Now;
+            post_content = String.Empty;
+            post_excerpt = String.Empty;
+            comment_count = 0;
+            display_name = String.Empty;
+            user_login = String.Empty;
+            user_email = String.Empty;
+            user_url = String.Empty;
+        }
+    }
+
+    public Dictionary<ulong, PostInfo> m_posts = new Dictionary<ulong, PostInfo>();
 
     public void Start(string[] args)
     {
@@ -144,53 +204,71 @@ ImportWP
                                             m_dbHost, m_dbName, m_dbUser, m_dbPass);
         Logger.Log("Connection string = {0}", m_connectionString);
 
-        Dictionary<ulong, Dictionary<string, string>> pageNameList = new Dictionary<ulong,Dictionary<string,string>>();
+        Dictionary<ulong, Dictionary<string, string>> pageNameList = new Dictionary<ulong, Dictionary<string, string>>();
         using (MySqlConnection dbcon = new MySqlConnection(m_connectionString))
         {
             dbcon.Open();
 
-            // Find the Pages
-            using (MySqlCommand cmd = new MySqlCommand(
-                       String.Format("SELECT "
-                                        + "ID,"
-                                        + "post_title,"
-                                        + "post_name,"
-                                        + "post_parent"
-                                        + " FROM {0}posts WHERE post_type = 'page'",
-                                                m_tablePrefix), dbcon))
-            {
-                try
-                {
-                    using (MySqlDataReader dbReader = cmd.ExecuteReader())
-                    {
-                        while (dbReader.Read())
-                        {
-                            ulong pageID = (ulong)dbReader["ID"];
-                            string pageTitle = (string)dbReader["post_title"];
-                            string pageSlug = Sluggify((string)dbReader["post_name"]);
-                            ulong pageParent = (ulong)dbReader["post_parent"];
-                            Dictionary<string, string> pieces = new Dictionary<string,string>();
-                            pieces["pageTitle"] = pageTitle;
-                            pieces["pageSlug"] = pageSlug;
-                            pieces["pageParent"] = pageParent.ToString();
-                            pageNameList[pageID] = pieces;
+            // populate m_pageNameList
+            GetPageNameList(dbcon);
+            // populate m_posts
+            GetPosts(dbcon);
+            ProcessPosts(dbcon);
+        }
+    }
 
-                            if (m_verbose > 0)
-                            {
-                                Logger.Log("Pages: ID={0}, title={1}, slug={2}, parent={3}",
-                                                        pageID, pageTitle, pageSlug, pageParent);
-                            }
+    private void ProcessPosts(MySqlConnection dbcon)
+    {
+        foreach (PostInfo post in m_posts.Values)
+        {
+            // GetTagsAndCategories(dbcon, post.ID);
+        }
+    }
+
+    private void GetPageNameList(MySqlConnection dbcon)
+    {
+        // Find the Pages
+        using (MySqlCommand cmd = new MySqlCommand(
+                   String.Format("SELECT "
+                                    + "ID,"
+                                    + "post_title,"
+                                    + "post_name,"
+                                    + "post_parent"
+                                    + " FROM {0}posts WHERE post_type = 'page'",
+                                            m_tablePrefix), dbcon))
+        {
+            try
+            {
+                using (MySqlDataReader dbReader = cmd.ExecuteReader())
+                {
+                    while (dbReader.Read())
+                    {
+                        PageName pn = new PageName();
+                        ulong pageID = dbReader.GetUInt64("ID");
+                        pn.ID = pageID;
+                        pn.post_title = dbReader.GetString("post_title");
+                        pn.post_name = Sluggify(dbReader.GetString("post_name"));
+                        pn.post_parent = dbReader.GetUInt64("post_parent");
+                        m_pageNameList[pageID] = pn;
+
+                        if (m_verbose > 0)
+                        {
+                            Logger.Log("Pages: ID={0}, title={1}, slug={2}, parent={3}",
+                                        pageID, pn.post_title, pn.post_name, pn.post_parent);
                         }
                     }
                 }
-                catch (Exception e)
-                {
-                    Logger.Log("Error reading DB: {0}", e);
-                }
             }
+            catch (Exception e)
+            {
+                Logger.Log("Error reading DB: {0}", e);
+            }
+        }
+    }
 
-
-            using (MySqlCommand cmd = new MySqlCommand(
+    private void GetPosts(MySqlConnection dbcon)
+    {
+        using (MySqlCommand cmd = new MySqlCommand(
                                String.Format("SELECT "
                                  + "{0}posts.ID,"
                                  + "{0}posts.guid,"
@@ -210,124 +288,140 @@ ImportWP
                                  + " FROM {0}posts LEFT JOIN {0}users ON {0}posts.post_author = {0}users.ID"
                                  + " WHERE {0}posts.post_status = 'publish'", m_tablePrefix)
                                            , dbcon))
+        {
+            try
             {
-                try
+                using (MySqlDataReader dbReader = cmd.ExecuteReader())
                 {
-                    using (MySqlDataReader dbReader = cmd.ExecuteReader())
+                    while (dbReader.Read())
                     {
-                        while (dbReader.Read())
+                        PostInfo post = new PostInfo();
+
+                        ulong postID = dbReader.GetUInt64("ID");
+                        post.ID = postID;
+                        post.post_title = dbReader.GetString("post_title");
+                        if (m_cleanEntities) post.post_title = CleanEntities(post.post_title);
+
+                        post.guid = dbReader.GetString("guid");
+                        post.post_type = dbReader.GetString("post_type");
+                        post.post_status = dbReader.GetString("post_status");
+                        post.comment_count = dbReader.GetInt32("comment_count");
+
+                        if (m_verbose > 0)
                         {
-                            if (m_verbose > 0)
+                            Logger.Log("Post: ID={0}, title={1}", post.ID, post.post_title);
+                        }
+
+                        post.post_slug = dbReader.GetString("post_name");
+                        if (String.IsNullOrEmpty(post.post_slug)) post.post_slug = Sluggify(post.post_title);
+
+                        post.post_date = parseTheDate(dbReader, "post_date");
+                        post.post_date_gmt = parseTheDate(dbReader, "post_date_gmt");
+
+                        post.post_name = String.Format("{0:d2}-{1:d2}-{2:d2}-{3}.md",
+                                post.post_date.Year, post.post_date.Month, post.post_date.Day, post.post_slug);
+
+                        post.post_content = dbReader.GetString("post_content");
+                        if (m_cleanEntities) post.post_content = CleanEntities(post.post_content);
+
+                        post.post_excerpt = dbReader.GetString("post_excerpt");
+
+                        int moreIndex = post.post_content.IndexOf("<!--- more --->");
+                        string moreAnchor = String.Empty;
+
+                        if (String.IsNullOrEmpty(post.post_excerpt) && moreIndex > 0)
+                        {
+                            post.post_excerpt = post.post_content.Substring(0, moreIndex);
+                        }
+                        if (moreIndex > 0)
+                        {
+                            string content = post.post_content.Replace("<!--- more --->", "<a id=\"more\"></a>");
+                            content = content.Replace("<!--- more --->",
+                                String.Format("<a id=\"more\"></a><a id=\"more-{0}\"></a>", ((ulong)dbReader["ID"]) ));
+                            post.post_content = content;
+                        }
+
+                        if (m_verbose > 0)
+                            Logger.Log("title='{0}', slug='{1}', date={2}, name='{3}'",
+                                       post.post_title, post.post_slug, post.post_date, post.post_name);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Logger.Log("Error reading DB: {0}", e);
+            }
+        }
+    }
+
+    private void GetTagsAndCategoriesForPost(MySqlConnection dbcon, ulong postID)
+    {
+        HashSet<string> categories = new HashSet<string>();
+        HashSet<string> tags = new HashSet<string>();
+
+        using (MySqlCommand cmd = new MySqlCommand(
+                                    String.Format("SELECT "
+                                        + "{0}terms.name,"
+                                        + "{0}term_taxonomy.taxonomy"
+                                        + " FROM"
+                                        + "{0}terms,"
+                                        + "{0}term_relationships,"
+                                        + "{0}term_taxonomy "
+                                        + " WHERE"
+                                        + "{0}term_relationships.object_id = '{1}' AND "
+                                        + "{0}term_relationships.term_taxonomy_id = {0}term_taxonomy.term_taxonomy_id AND "
+                                        + "{0}terms.term_id = {0}term_taxonomy.term_id",
+                                        m_tablePrefix, postID) , dbcon) )
+        {
+            try
+            {
+                using (MySqlDataReader dbReader = cmd.ExecuteReader())
+                {
+                    while (dbReader.Read())
+                    {
+                        if (m_verbose > 0)
+                        {
+                            if (((string)dbReader["term"]) == "category")
                             {
-                                ulong postID = (ulong)dbReader["ID"];
-                                string postTitle = (string)dbReader["post_title"];
-                                Logger.Log("Post: ID={0}, title={1}", postID, postTitle);
+                                string cat = (string)dbReader["name"];
+                                if (m_cleanEntities)
+                                    categories.Add(CleanEntities(cat));
+                                else
+                                    categories.Add(cat);
+                                if (m_verbose > 0) Logger.Log("Category = {0}", cat);
                             }
-                            string pTitle = (string)dbReader["post_title"];
-                            if (m_cleanEntities) pTitle = CleanEntities(pTitle);
-
-                            string pSlug = (string)dbReader["post_name"];
-                            if (String.IsNullOrEmpty(pSlug)) pSlug = Sluggify(pTitle);
-
-                            DateTime pDate = DateTime.Now;
-                            try
+                            if (((string)dbReader["term"]) == "post_tag")
                             {
-                                pDate = (DateTime)dbReader["post_date"];
-                            }
-                            catch
-                            {
-                                pDate = DateTime.Now;
-                            }
-
-                            string pName = String.Format("{0:d2}-{1:d2}-{2:d2}-{3}.md", pDate.Year, pDate.Month, pDate.Day, pSlug);
-
-                            string pContent = (string)dbReader["post_content"];
-                            if (m_cleanEntities) pContent = CleanEntities(pContent);
-
-                            string pExceprt = (string)dbReader["post_excerpt"];
-
-                            int moreIndex = pContent.IndexOf("<!--- more --->");
-                            string moreAnchor = String.Empty;
-                            string pExcerpt = (string)dbReader["post_excerpt"];
-
-                            if (String.IsNullOrEmpty(pExcerpt) && moreIndex > 0)
-                            {
-                                pExceprt = pContent.Substring(0, moreIndex);
-                            }
-                            if (moreIndex > 0)
-                            {
-                                pContent.Replace("<!--- more --->", "<a id=\"more\"></a>");
-                                pContent.Replace("<!--- more --->",
-                                    String.Format("<a id=\"more\"></a><a id=\"more-{0}\"></a>", ((ulong)dbReader["ID"]) ));
-                            }
-
-                            if (m_verbose > 0)
-                                Logger.Log("title='{0}', slug='{1}', date={2}, name='{3}'", pTitle, pSlug, pDate, pName);
-
-
-                            HashSet<string> categories = new HashSet<string>();
-                            HashSet<string> tags = new HashSet<string>();
-
-                            using (MySqlCommand cmd2 = new MySqlCommand(
-                                                        String.Format("SELECT "
-                                                            + "{0}terms.name,"
-                                                            + "{0}term_taxonomy.taxonomy"
-                                                            + " FROM"
-                                                            + "{0}terms,"
-                                                            + "{0}term_relationships,"
-                                                            + "{0}term_taxonomy "
-                                                            + " WHERE"
-                                                            + "{0}term_relationships.object_id = '{1}' AND "
-                                                            + "{0}term_relationships.term_taxonomy_id = {0}term_taxonomy.term_taxonomy_id AND "
-                                                            + "{0}terms.term_id = {0}term_taxonomy.term_id", m_tablePrefix, ((ulong)dbReader["ID"])
-                                                            , dbcon) ))
-                            {
-                                try
-                                {
-                                    using (MySqlDataReader dbReader2 = cmd2.ExecuteReader())
-                                    {
-                                        while (dbReader2.Read())
-                                        {
-                                            if (m_verbose > 0)
-                                            {
-                                                if (((string)dbReader2["term"]) == "category")
-                                                {
-                                                    string cat = (string)dbReader2["name"];
-                                                    if (m_cleanEntities)
-                                                        categories.Add(CleanEntities(cat));
-                                                    else
-                                                        categories.Add(cat);
-                                                    if (m_verbose > 0) Logger.Log("Category = {0}", cat);
-                                                }
-                                                if (((string)dbReader2["term"]) == "post_tag")
-                                                {
-                                                    string tag = (string)dbReader2["name"];
-                                                    if (m_cleanEntities)
-                                                        tags.Add(CleanEntities(tag));
-                                                    else
-                                                        tags.Add(tag);
-                                                    if (m_verbose > 0) Logger.Log("Tag = {0}", tag);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                catch (Exception e)
-                                {
-                                    Logger.Log("Error reading DB: {0}", e);
-                                }
+                                string tag = (string)dbReader["name"];
+                                if (m_cleanEntities)
+                                    tags.Add(CleanEntities(tag));
+                                else
+                                    tags.Add(tag);
+                                if (m_verbose > 0) Logger.Log("Tag = {0}", tag);
                             }
                         }
                     }
                 }
-                catch (Exception e)
-                {
-                    Logger.Log("Error reading DB: {0}", e);
-                }
+            }
+            catch (Exception e)
+            {
+                Logger.Log("Error reading DB: {0}", e);
             }
         }
+    }
 
-
+    private DateTime parseTheDate(MySqlDataReader reader, string column)
+    {
+        DateTime ret = DateTime.Now;
+        try
+        {
+            ret = reader.GetDateTime("post_date");
+        }
+        catch
+        {
+            ret = DateTime.Now;
+        }
+        return ret;
     }
 
     private string CleanEntities(string ent)
