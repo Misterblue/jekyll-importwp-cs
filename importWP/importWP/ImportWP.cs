@@ -44,6 +44,7 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -154,6 +155,28 @@ ImportWP
 
     public Dictionary<ulong, PostInfo> m_posts = new Dictionary<ulong, PostInfo>();
 
+    public class CommentInfo
+    {
+        public ulong comment_ID;
+        public string author;
+        public string author_email;
+        public string author_url;
+        public DateTime date;
+        public DateTime date_gmt;
+        public string content;
+
+        public CommentInfo()
+        {
+            comment_ID = 0;
+            author = String.Empty;
+            author_email = String.Empty;
+            author_url = String.Empty;
+            date = DateTime.Now;
+            date_gmt = DateTime.Now;
+            content = String.Empty;
+        }
+    }
+
     public void Start(string[] args)
     {
         m_Parameters = ParameterParse.ParseArguments(args, false /* firstOpFlag */, true /* multipleFiles */);
@@ -213,15 +236,82 @@ ImportWP
             GetPageNameList(dbcon);
             // populate m_posts
             GetPosts(dbcon);
+            // Got through all the posts and output post files
             ProcessPosts(dbcon);
         }
     }
 
     private void ProcessPosts(MySqlConnection dbcon)
     {
+        List<string> categories;
+        List<string> tags;
+
+        List<CommentInfo> comments;
+
         foreach (PostInfo post in m_posts.Values)
         {
-            // GetTagsAndCategories(dbcon, post.ID);
+            GetTagsAndCategoriesForPost(dbcon, post.ID, out categories, out tags);
+
+            if (post.comment_count > 0)
+                GetCommentsForPost(dbcon, post.ID, out comments);
+            else
+                comments = new List<CommentInfo>();
+
+            var data = new
+            {
+                layout = post.post_type,
+                status = post.post_status,
+                published = post.post_status == "draft" ? String.Empty : "publish",
+                title = post.post_title,
+                author = new
+                {
+                    display_name = post.display_name,
+                    login = post.user_login,
+                    email = post.user_email,
+                    url = post.user_url,
+                },
+                author_login = post.user_login,
+                author_email = post.user_email,
+                author_url = post.user_url,
+                excerpt = post.post_excerpt,
+                // more_anchor = post.more_anchor,
+                // Seems like but in the Ruby code but I don't use More so not a problem
+                // more_anchor = string.Empty,
+                wordpress_id = post.ID.ToString(),
+                wordpress_url = post.guid,
+                date = post.post_date.ToString(),
+                // date_gmt = post.post_date_gmt.ToString(),
+                categories = categories,
+                tags = tags,
+                comments = comments
+            };
+
+            string filename = String.Empty;
+            if (post.post_type == "page")
+            {
+                filename = Path.Combine(BuildPagePath(post.ID), "index.md");
+            }
+            else if (post.post_type == "draft")
+            {
+                filename = "_drafts/" + post.post_slug + ".md";
+            }
+            else
+            {
+                filename = "_posts/" + post.post_name;
+            }
+
+            string fileDir = Path.GetDirectoryName(filename);
+            if (m_verbose > 0) Logger.Log("==== Filename={0}, fileDir={1}", filename, fileDir);
+            if (!Directory.Exists(fileDir))
+                Directory.CreateDirectory(fileDir);
+
+            using (StreamWriter outt = File.CreateText(filename))
+            {
+                var serializer = new YamlDotNet.Serialization.Serializer();
+                serializer.Serialize(outt, data);
+                outt.WriteLine("---");
+                outt.Write(post.post_content);
+            }
         }
     }
 
@@ -261,7 +351,7 @@ ImportWP
             }
             catch (Exception e)
             {
-                Logger.Log("Error reading DB: {0}", e);
+                Logger.Log("Error reading page names from DB: {0}", e);
             }
         }
     }
@@ -306,6 +396,7 @@ ImportWP
                         post.post_type = dbReader.GetString("post_type");
                         post.post_status = dbReader.GetString("post_status");
                         post.comment_count = dbReader.GetInt32("comment_count");
+                        post.display_name = dbReader.GetString("display_name");
 
                         if (m_verbose > 0)
                         {
@@ -344,30 +435,33 @@ ImportWP
                         if (m_verbose > 0)
                             Logger.Log("title='{0}', slug='{1}', date={2}, name='{3}'",
                                        post.post_title, post.post_slug, post.post_date, post.post_name);
+
+                        m_posts.Add(postID, post);
                     }
                 }
             }
             catch (Exception e)
             {
-                Logger.Log("Error reading DB: {0}", e);
+                Logger.Log("Error reading posts DB: {0}", e);
             }
         }
     }
 
-    private void GetTagsAndCategoriesForPost(MySqlConnection dbcon, ulong postID)
+    private void GetTagsAndCategoriesForPost(MySqlConnection dbcon, ulong postID,
+                        out List<string> categories, out List<string> tags)
     {
-        HashSet<string> categories = new HashSet<string>();
-        HashSet<string> tags = new HashSet<string>();
+        List<string> tcategories = new List<string>();
+        List<string> ttags = new List<string>();
 
         using (MySqlCommand cmd = new MySqlCommand(
                                     String.Format("SELECT "
                                         + "{0}terms.name,"
                                         + "{0}term_taxonomy.taxonomy"
-                                        + " FROM"
+                                        + " FROM "
                                         + "{0}terms,"
                                         + "{0}term_relationships,"
                                         + "{0}term_taxonomy "
-                                        + " WHERE"
+                                        + " WHERE "
                                         + "{0}term_relationships.object_id = '{1}' AND "
                                         + "{0}term_relationships.term_taxonomy_id = {0}term_taxonomy.term_taxonomy_id AND "
                                         + "{0}terms.term_id = {0}term_taxonomy.term_id",
@@ -379,35 +473,107 @@ ImportWP
                 {
                     while (dbReader.Read())
                     {
-                        if (m_verbose > 0)
+                        if (((string)dbReader["taxonomy"]) == "category")
                         {
-                            if (((string)dbReader["term"]) == "category")
-                            {
-                                string cat = (string)dbReader["name"];
-                                if (m_cleanEntities)
-                                    categories.Add(CleanEntities(cat));
-                                else
-                                    categories.Add(cat);
-                                if (m_verbose > 0) Logger.Log("Category = {0}", cat);
-                            }
-                            if (((string)dbReader["term"]) == "post_tag")
-                            {
-                                string tag = (string)dbReader["name"];
-                                if (m_cleanEntities)
-                                    tags.Add(CleanEntities(tag));
-                                else
-                                    tags.Add(tag);
-                                if (m_verbose > 0) Logger.Log("Tag = {0}", tag);
-                            }
+                            string cat = (string)dbReader["name"];
+                            if (m_cleanEntities)
+                                tcategories.Add(CleanEntities(cat));
+                            else
+                                tcategories.Add(cat);
+                            if (m_verbose > 0) Logger.Log("Category = {0}", cat);
+                        }
+                        if (((string)dbReader["taxonomy"]) == "post_tag")
+                        {
+                            string tag = (string)dbReader["name"];
+                            if (m_cleanEntities)
+                                ttags.Add(CleanEntities(tag));
+                            else
+                                ttags.Add(tag);
+                            if (m_verbose > 0) Logger.Log("Tag = {0}", tag);
                         }
                     }
                 }
             }
             catch (Exception e)
             {
-                Logger.Log("Error reading DB: {0}", e);
+                Logger.Log("Error reading tags and categories from DB: {0}", e);
             }
         }
+        categories = tcategories;
+        tags = ttags;
+    }
+
+    private void GetCommentsForPost(MySqlConnection dbcon, ulong postID, out List<CommentInfo> comments)
+    {
+        // HashSet<CommentInfo> tcomments = new HashSet<CommentInfo>();
+        SortedDictionary<ulong, CommentInfo> tcomments = new SortedDictionary<ulong, CommentInfo>();
+        
+        using (MySqlCommand cmd = new MySqlCommand(
+                                    String.Format("SELECT "
+                                        + "{0}comments.comment_ID,"
+                                        + "{0}comments.comment_author,"
+                                        + "{0}comments.comment_author_email,"
+                                        + "{0}comments.comment_author_url,"
+                                        + "{0}comments.comment_date,"
+                                        + "{0}comments.comment_date_gmt,"
+                                        + "{0}comments.comment_content"
+                                        + " FROM "
+                                        + "{0}comments"
+                                        + " WHERE "
+                                        + "{0}comments.comment_post_ID = '{1}' AND "
+                                        + "{0}comments.comment_approved <> 'spam'",
+                                        m_tablePrefix, postID) , dbcon) )
+        {
+            try
+            {
+                using (MySqlDataReader dbReader = cmd.ExecuteReader())
+                {
+                    while (dbReader.Read())
+                    {
+                        CommentInfo comm = new CommentInfo();
+                        comm.comment_ID = dbReader.GetUInt64("comment_ID");
+                        comm.author = dbReader.GetString("comment_author");
+                        comm.author_email = dbReader.GetString("comment_author_email");
+                        comm.author_url = dbReader.GetString("comment_author_url");
+                        comm.date = dbReader.GetDateTime("comment_date");
+                        // comm.date_gmt = dbReader.GetDateTime("comment_date_gmt");
+                        comm.content = dbReader.GetString("comment_content");
+
+                        if (m_cleanEntities)
+                        {
+                            CleanEntities(comm.content);
+                            CleanEntities(comm.author);
+                        }
+
+                        tcomments.Add(comm.comment_ID, comm);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Logger.Log("Error reading comments from DB: {0}", e);
+            }
+        }
+
+        List<CommentInfo> temp = new List<CommentInfo>();
+        foreach (KeyValuePair<ulong, CommentInfo> kvp in tcomments)
+        {
+            temp.Add(kvp.Value);
+        }
+        comments = temp;
+    }
+
+    private string BuildPagePath(ulong postID)
+    {
+        string ret = String.Empty;
+
+        PageName pn;
+        if (m_pageNameList.TryGetValue(postID, out pn))
+        {
+            ret = Path.Combine(BuildPagePath(pn.post_parent), pn.post_name);
+        }
+
+        return ret;
     }
 
     private DateTime parseTheDate(MySqlDataReader reader, string column)
